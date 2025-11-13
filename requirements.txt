@@ -1,0 +1,5 @@
+zeroconf==0.131.0
+tornado==6.2.0 ; python_version=='3.7'
+tornado==6.4.1 ; python_version>='3.8'
+requests==2.31.0
+websocket-client==1.6.4

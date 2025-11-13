@@ -17,28 +17,53 @@ class MoonrakerServiceListener(ServiceListener):
     
     def __init__(self):
         self.services = []
+        self.services_by_key = {}  # Track services by (IP, port) to avoid duplicates
         self.lock = threading.Lock()
+    
+    def _get_service_key(self, address, port):
+        """Generate a unique key for a service (IP address + port)."""
+        return f"{address}:{port}"
+    
+    def _convert_addresses(self, info):
+        """Convert addresses from bytes to IP strings."""
+        addresses = []
+        for addr in info.addresses:
+            if isinstance(addr, bytes):
+                # IPv4 address is 4 bytes
+                if len(addr) == 4:
+                    addresses.append('.'.join(str(b) for b in addr))
+                elif len(addr) == 16:
+                    # IPv6 address (16 bytes) - convert to hex format
+                    ipv6_parts = [f'{addr[i]:02x}{addr[i+1]:02x}' for i in range(0, 16, 2)]
+                    addresses.append(':'.join(ipv6_parts))
+                else:
+                    addresses.append(addr.hex())
+            else:
+                addresses.append(str(addr))
+        return addresses
     
     def add_service(self, zeroconf, service_type, name):
         """Called when a service is discovered."""
         info = zeroconf.get_service_info(service_type, name)
         if info:
             with self.lock:
-                # Convert addresses from bytes to IP strings
-                addresses = []
-                for addr in info.addresses:
-                    if isinstance(addr, bytes):
-                        # IPv4 address is 4 bytes
-                        if len(addr) == 4:
-                            addresses.append('.'.join(str(b) for b in addr))
-                        elif len(addr) == 16:
-                            # IPv6 address (16 bytes) - convert to hex format
-                            ipv6_parts = [f'{addr[i]:02x}{addr[i+1]:02x}' for i in range(0, 16, 2)]
-                            addresses.append(':'.join(ipv6_parts))
-                        else:
-                            addresses.append(addr.hex())
-                    else:
-                        addresses.append(str(addr))
+                # Convert addresses first
+                addresses = self._convert_addresses(info)
+                if not addresses:
+                    return  # No valid address
+                
+                # Use first address + port as unique key
+                primary_address = addresses[0]
+                port = info.port
+                service_key = self._get_service_key(primary_address, port)
+                
+                # Check if service already exists (by IP + port)
+                if service_key in self.services_by_key:
+                    # Service already exists, update it silently (no duplicate)
+                    existing_service = self.services_by_key[service_key]
+                    # Update existing service data
+                    self._update_service_data(existing_service, info, service_type, name, addresses)
+                    return
                 
                 # Convert properties from bytes to strings
                 properties = {}
@@ -57,22 +82,71 @@ class MoonrakerServiceListener(ServiceListener):
                     "name": name,
                     "type": service_type,
                     "addresses": addresses,
-                    "port": info.port,
+                    "port": port,
                     "properties": properties,
                     "server": info.server
                 }
                 self.services.append(service_data)
+                self.services_by_key[service_key] = service_data
                 print(f"\n✓ Discovered service: {name}")
                 print(f"  Address: {', '.join(service_data['addresses'])}")
                 print(f"  Port: {service_data['port']}")
                 if service_data['properties']:
                     print(f"  Properties: {service_data['properties']}")
     
+    def _update_service_data(self, service_data, info, service_type, name, addresses=None):
+        """Update existing service data with new information."""
+        if addresses is None:
+            addresses = self._convert_addresses(info)
+        
+        old_address = service_data.get("addresses", [""])[0] if service_data.get("addresses") else ""
+        old_port = service_data.get("port")
+        new_address = addresses[0] if addresses else ""
+        new_port = info.port
+        
+        # Convert properties from bytes to strings
+        properties = {}
+        if info.properties:
+            for key, value in info.properties.items():
+                if isinstance(key, bytes):
+                    key = key.decode('utf-8')
+                if isinstance(value, bytes):
+                    try:
+                        value = value.decode('utf-8')
+                    except UnicodeDecodeError:
+                        value = value.hex()
+                properties[key] = value
+        
+        # Check if address or port changed (shouldn't happen, but log if it does)
+        if old_address != new_address or old_port != new_port:
+            print(f"\n⚠ Service {name} changed: {old_address}:{old_port} -> {new_address}:{new_port}")
+            # Remove old service key and add new one
+            old_key = self._get_service_key(old_address, old_port)
+            new_key = self._get_service_key(new_address, new_port)
+            if old_key in self.services_by_key:
+                del self.services_by_key[old_key]
+            self.services_by_key[new_key] = service_data
+        
+        # Update service data
+        service_data["addresses"] = addresses
+        service_data["port"] = new_port
+        service_data["properties"] = properties
+        service_data["server"] = info.server
+        service_data["name"] = name  # Update name in case it changed
+    
     def remove_service(self, zeroconf, service_type, name):
         """Called when a service is removed."""
         with self.lock:
-            self.services = [s for s in self.services if s['name'] != name]
-            print(f"\n✗ Service removed: {name}")
+            # Find and remove all services with this name (could be multiple IP:port combinations)
+            services_to_remove = [s for s in self.services if s['name'] == name]
+            for service in services_to_remove:
+                address = service['addresses'][0] if service.get('addresses') else 'unknown'
+                port = service['port']
+                service_key = self._get_service_key(address, port)
+                if service_key in self.services_by_key:
+                    del self.services_by_key[service_key]
+                self.services.remove(service)
+                print(f"\n✗ Service removed: {name} ({address}:{port})")
     
     def update_service(self, zeroconf, service_type, name):
         """Called when a service is updated."""

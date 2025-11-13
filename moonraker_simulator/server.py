@@ -360,6 +360,8 @@ class MoonrakerSimulator:
         self.service_info = None
         self.websocket_clients: Set[MoonrakerWebSocketHandler] = set()
         self.http_server = None
+        self._thread = None
+        self._ioloop = None
         
         # Simulated printer state
         self.printer_state = {
@@ -486,28 +488,78 @@ class MoonrakerSimulator:
             except Exception as e:
                 logger.warning(f"Failed to unregister Zeroconf service: {e}")
     
-    def start(self):
-        """Start the simulator server."""
+    def start(self, run_in_thread: bool = False):
+        """
+        Start the simulator server.
+        
+        Args:
+            run_in_thread: If True, run the server in a separate thread.
+                          If False, run in the current thread (blocking).
+        """
         logger.info(f"Starting Moonraker Simulator on {self.host}:{self.port}")
         
         # Register Zeroconf service
         self._register_zeroconf()
         
-        # Create HTTP server
-        self.http_server = HTTPServer(self.app)
-        self.http_server.listen(self.port, address=self.host)
-        
+        if run_in_thread:
+            # Run in a separate thread
+            # Create IOLoop first, then start HTTP server in that IOLoop
+            import threading
+            import time
+            self._thread = threading.Thread(target=self._run_ioloop, daemon=True)
+            self._thread.start()
+            # Give the thread a moment to start the IOLoop
+            time.sleep(0.2)
+            logger.info(f"Moonraker Simulator started in background thread on port {self.port}")
+        else:
+            # Run in current thread (blocking)
+            # Create HTTP server and start IOLoop in current thread
+            self.http_server = HTTPServer(self.app)
+            self.http_server.listen(self.port, address=self.host)
+            try:
+                # Start IOLoop
+                tornado.ioloop.IOLoop.current().start()
+            except KeyboardInterrupt:
+                logger.info("Shutting down...")
+            finally:
+                self.stop()
+    
+    def _run_ioloop(self):
+        """Run the IOLoop in a separate thread."""
         try:
-            # Start IOLoop
-            tornado.ioloop.IOLoop.current().start()
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
+            # Create a new IOLoop for this thread
+            self._ioloop = tornado.ioloop.IOLoop()
+            self._ioloop.make_current()
+            
+            # Start HTTP server in this IOLoop's thread
+            def start_server():
+                self.http_server = HTTPServer(self.app)
+                self.http_server.listen(self.port, address=self.host)
+                logger.info(f"HTTP server listening on {self.host}:{self.port}")
+            
+            # Schedule server start in the IOLoop
+            self._ioloop.add_callback(start_server)
+            
+            logger.info(f"IOLoop started for port {self.port}")
+            self._ioloop.start()
+        except Exception as e:
+            logger.error(f"Error in IOLoop for port {self.port}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             self.stop()
     
     def stop(self):
         """Stop the simulator server."""
+        logger.info(f"Stopping Moonraker Simulator on port {self.port}...")
         self._unregister_zeroconf()
+        
+        # Stop IOLoop if running in thread
+        if self._ioloop:
+            try:
+                self._ioloop.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping IOLoop: {e}")
         
         if self.http_server:
             self.http_server.stop()
@@ -520,21 +572,101 @@ class MoonrakerSimulator:
                 pass
         self.websocket_clients.clear()
         
-        logger.info("Moonraker Simulator stopped")
+        logger.info(f"Moonraker Simulator stopped on port {self.port}")
 
 
 def main():
     """Main entry point."""
     import argparse
+    import signal
+    import sys
     
-    parser = argparse.ArgumentParser(description="Moonraker Simulator")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=7125, help="Port to bind to")
+    parser = argparse.ArgumentParser(
+        description="Moonraker Simulator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Start a single instance on default port 7125
+  python -m moonraker_simulator
+
+  # Start a single instance on custom port
+  python -m moonraker_simulator --port 7126
+
+  # Start multiple instances with auto-incrementing ports
+  python -m moonraker_simulator --count 3
+
+  # Start multiple instances with custom start port
+  python -m moonraker_simulator --count 3 --start-port 8000
+
+  # Start multiple instances with custom host
+  python -m moonraker_simulator --host 0.0.0.0 --count 5
+
+  # Legacy: manually specify ports (still supported)
+  python -m moonraker_simulator --ports 7125 7126 7127
+        """
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=None, help="Port to bind to (single instance, default: 7125)")
+    parser.add_argument("--ports", type=int, nargs="+", help="Ports to bind to (multiple instances, legacy option)")
+    parser.add_argument("--count", type=int, default=1, help="Number of instances to start (default: 1)")
+    parser.add_argument("--start-port", type=int, default=7125, help="Starting port for auto-increment (default: 7125)")
     
     args = parser.parse_args()
     
-    simulator = MoonrakerSimulator(host=args.host, port=args.port)
-    simulator.start()
+    # Determine which ports to use
+    if args.ports:
+        # Legacy: manually specified ports (takes precedence)
+        ports = args.ports
+        logger.info(f"Starting {len(ports)} Moonraker Simulator instances on ports: {ports}")
+    elif args.count > 1:
+        # Multiple instances with auto-incrementing ports
+        # Use --port if specified, otherwise use --start-port (default: 7125)
+        if args.port is not None:
+            start_port = args.port
+        else:
+            start_port = args.start_port
+        ports = [start_port + i for i in range(args.count)]
+        logger.info(f"Starting {args.count} Moonraker Simulator instances on ports: {ports}")
+    elif args.port:
+        # Single instance with custom port
+        ports = [args.port]
+    else:
+        # Single instance with default port
+        ports = [7125]
+    
+    # Create and start simulators
+    simulators = []
+    for port in ports:
+        simulator = MoonrakerSimulator(host=args.host, port=port)
+        if len(ports) > 1:
+            # Run in thread for multiple instances
+            simulator.start(run_in_thread=True)
+        else:
+            # Run in main thread for single instance
+            simulator.start(run_in_thread=False)
+            return  # Single instance blocks here
+        
+        simulators.append(simulator)
+    
+    # For multiple instances, wait for interrupt signal
+    if len(simulators) > 1:
+        def signal_handler(sig, frame):
+            logger.info("\nShutting down all simulators...")
+            for simulator in simulators:
+                simulator.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        logger.info(f"All {len(simulators)} simulators are running. Press Ctrl+C to stop.")
+        try:
+            # Keep main thread alive
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            signal_handler(None, None)
 
 
 if __name__ == "__main__":

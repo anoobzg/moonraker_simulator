@@ -33,8 +33,29 @@ python moonraker_simulator/server.py
 ### 自定义端口和主机
 
 ```bash
+# 单个实例，自定义端口
 python -m moonraker_simulator --host 0.0.0.0 --port 7125
+
+# 同时运行多个实例，端口自动递增（推荐方式）
+python -m moonraker_simulator --count 3
+
+# 多个实例，自定义起始端口
+python -m moonraker_simulator --count 3 --start-port 8000
+
+# 多个实例，自定义主机
+python -m moonraker_simulator --host 0.0.0.0 --count 5
+
+# 传统方式：手动指定端口（仍然支持）
+python -m moonraker_simulator --ports 7125 7126 7127
 ```
+
+#### 多实例参数说明
+
+- `--count N`: 启动 N 个实例，端口从 `--start-port` 开始自动递增
+- `--start-port PORT`: 指定起始端口（默认: 7125）
+- `--ports PORT1 PORT2 ...`: 手动指定端口列表（传统方式，仍然支持）
+
+例如：`--count 3 --start-port 8000` 会启动 3 个实例，端口分别为 8000, 8001, 8002
 
 ## API 端点
 
@@ -107,7 +128,11 @@ print(response.json())
 
 ### 使用测试客户端脚本
 
-项目包含一个测试客户端示例，可以测试 REST API、WebSocket 和服务发现功能：
+项目包含测试客户端模块，可以测试 REST API、WebSocket 和服务发现功能：
+
+#### 统一测试入口
+
+使用 `example_client.py` 作为统一入口，可以测试所有功能：
 
 ```bash
 # 测试所有功能
@@ -128,6 +153,28 @@ python simulator_client/example_client.py --url http://192.168.1.100:7125
 # 自定义服务发现超时时间
 python simulator_client/example_client.py --discovery-only --discovery-timeout 10
 ```
+
+#### 独立测试模块
+
+也可以单独运行各个测试模块：
+
+```bash
+# 只测试 REST API
+python simulator_client/test_rest_api.py --url http://localhost:7125
+
+# 只测试 WebSocket
+python simulator_client/test_websocket.py --url http://localhost:7125
+
+# 只测试服务发现
+python simulator_client/test_zeroconf.py --timeout 5
+```
+
+#### 测试模块结构
+
+- `example_client.py` - 统一测试入口，协调所有测试
+- `test_rest_api.py` - REST API 测试模块
+- `test_websocket.py` - WebSocket 测试模块（包含 WebSocketClient 类）
+- `test_zeroconf.py` - Zeroconf 服务发现测试模块（包含 MoonrakerServiceListener 类）
 
 ### 服务发现测试
 

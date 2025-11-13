@@ -14,7 +14,7 @@ import tornado.ioloop
 import tornado.web
 import tornado.websocket
 from tornado.httpserver import HTTPServer
-from zeroconf import ServiceInfo, Zeroconf
+from zeroconf import ServiceInfo, Zeroconf, IPVersion
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -422,32 +422,44 @@ class MoonrakerSimulator:
     
     def _register_zeroconf(self):
         """Register service with Zeroconf for service discovery."""
+        # Skip if already registered
+        if self.zeroconf is not None:
+            return
+        
         try:
+            import socket
+            
             service_type = "_moonraker._tcp.local."
             
             # Get local IP address for service registration
             local_ip = self._get_local_ip()
             
             # Generate a unique service name (use hostname if available)
-            import socket
+            # Format: hostname._moonraker._tcp.local. (replace spaces with hyphens)
+            # For multiple instances, add port to make it unique
             try:
                 hostname = socket.gethostname()
-                service_name = f"{hostname}._moonraker._tcp.local."
+                # Clean hostname: replace spaces and special chars with hyphens
+                clean_hostname = hostname.replace(' ', '-').replace('_', '-')
+                # Add port to service name for uniqueness when running multiple instances
+                service_name = f"{clean_hostname}-{self.port}.{service_type}"
             except Exception:
-                service_name = f"Moonraker Simulator._moonraker._tcp.local."
+                service_name = f"Moonraker-Simulator-{self.port}.{service_type}"
             
             # Convert IP string to bytes for ServiceInfo
             ip_bytes = socket.inet_aton(local_ip)
             
-            # Get server hostname for mDNS
+            # Get server hostname for mDNS (format: hostname.local.)
             try:
-                server_hostname = socket.gethostname() + ".local."
+                clean_hostname = socket.gethostname().replace(' ', '-').replace('_', '-')
+                server_hostname = f"{clean_hostname}.local."
             except Exception:
                 server_hostname = f"{local_ip.replace('.', '-')}.local."
             
+            # Create ServiceInfo with proper format (matching reference implementation)
             self.service_info = ServiceInfo(
-                service_type,
-                service_name,
+                type_=service_type,
+                name=service_name,
                 addresses=[ip_bytes],
                 port=self.port,
                 properties={
@@ -457,13 +469,27 @@ class MoonrakerSimulator:
                 server=server_hostname
             )
             
-            self.zeroconf = Zeroconf()
+            # Create Zeroconf instance with IPv4 only for better compatibility
+            # This is critical for reliable service discovery
+            self.zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
+            
+            # Register service - this should be done after server is ready
             self.zeroconf.register_service(self.service_info)
-            logger.info(f"Registered Zeroconf service: {service_name}")
-            logger.info(f"  Service available at: http://{local_ip}:{self.port}")
-            logger.info(f"  Service discoverable on local network via mDNS/Bonjour")
+            
+            logger.info("=" * 60)
+            logger.info("📡 mDNS Service Registered")
+            logger.info("=" * 60)
+            logger.info(f"📍 Service Name: {service_name}")
+            logger.info(f"🌐 Service Type: {service_type}")
+            logger.info(f"🔗 Host IP: {local_ip}")
+            logger.info(f"🔌 Port: {self.port}")
+            logger.info(f"📋 Server: {server_hostname}")
+            logger.info(f"🌍 Service URL: http://{local_ip}:{self.port}")
+            logger.info("=" * 60)
         except Exception as e:
             logger.warning(f"Failed to register Zeroconf service: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
             logger.warning("  Service discovery may not work, but server will still run")
     
     def _get_local_ip(self):
@@ -498,24 +524,43 @@ class MoonrakerSimulator:
         """
         logger.info(f"Starting Moonraker Simulator on {self.host}:{self.port}")
         
-        # Register Zeroconf service
-        self._register_zeroconf()
-        
         if run_in_thread:
             # Run in a separate thread
             # Create IOLoop first, then start HTTP server in that IOLoop
             import threading
             import time
+            import socket
+            
             self._thread = threading.Thread(target=self._run_ioloop, daemon=True)
             self._thread.start()
-            # Give the thread a moment to start the IOLoop
-            time.sleep(0.2)
+            
+            # Wait for server to be ready by checking if port is listening
+            max_retries = 10
+            retry_count = 0
+            while retry_count < max_retries:
+                time.sleep(0.1)
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.1)
+                    result = sock.connect_ex((self.host if self.host != "0.0.0.0" else "127.0.0.1", self.port))
+                    sock.close()
+                    if result == 0:
+                        # Port is listening, server is ready
+                        break
+                except Exception:
+                    pass
+                retry_count += 1
+            
+            # Register Zeroconf after server is ready
+            self._register_zeroconf()
             logger.info(f"Moonraker Simulator started in background thread on port {self.port}")
         else:
             # Run in current thread (blocking)
             # Create HTTP server and start IOLoop in current thread
             self.http_server = HTTPServer(self.app)
             self.http_server.listen(self.port, address=self.host)
+            # Register Zeroconf after server is listening
+            self._register_zeroconf()
             try:
                 # Start IOLoop
                 tornado.ioloop.IOLoop.current().start()

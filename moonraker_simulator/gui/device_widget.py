@@ -40,20 +40,23 @@ class DeviceWidget:
         self.progress_tag = f"device_progress_{device_id}"
         self.progress_bar_tag = f"device_progress_bar_{device_id}"
     
-    def create_widget(self, parent: Optional[int] = None):
+    def create_widget(self, parent: Optional[int] = None, width: Optional[int] = None, height: Optional[int] = None):
         """
         Create the device widget UI.
         
         Args:
             parent: Parent window/group tag
+            width: Fixed width for grid layout (optional)
+            height: Fixed height for grid layout (optional)
         """
         # Create device container (child window or group)
         with dpg.child_window(
             tag=self.container_tag,
             parent=parent,
-            height=200,
+            width=width if width else -1,
+            height=height if height else 200,
             border=True,
-            autosize_x=True
+            autosize_x=width is None
         ):
             # Device header with name and remove button
             with dpg.group(horizontal=True):

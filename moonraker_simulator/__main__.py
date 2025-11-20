@@ -13,8 +13,18 @@ if __name__ == "__main__":
     
     if args.gui:
         # Launch GUI mode
-        from moonraker_simulator.gui import main as gui_main
-        gui_main(host=args.host, port=args.port)
+        # Import from gui.py module using importlib to avoid package/module conflict
+        import importlib.util
+        from pathlib import Path
+        
+        # Get the gui.py file path
+        gui_file = Path(__file__).parent / "gui.py"
+        spec = importlib.util.spec_from_file_location("moonraker_simulator.gui_main", gui_file)
+        gui_main_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gui_main_module)
+        
+        # Use start_port instead of port for new GUI
+        gui_main_module.main(start_port=args.port)
     else:
         # Launch CLI mode (pass remaining args to server main)
         from moonraker_simulator.server import main as server_main

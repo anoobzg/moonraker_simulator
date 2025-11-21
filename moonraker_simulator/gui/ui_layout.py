@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-UI layout management for the main window.
+UI layout management for the main window using tkinter.
 """
 
 import logging
 from typing import Optional, Callable
-import dearpygui.dearpygui as dpg
+import tkinter as tk
+from tkinter import ttk, simpledialog
 from .device_manager import DeviceManager
 from .device_widget import DeviceWidget
 
@@ -30,24 +31,27 @@ class UILayout:
         self.on_add_device = on_add_device
         self.on_batch_add = on_batch_add
         
-        # UI tags
-        self.main_window_tag = "main_window"
-        self.button_bar_tag = "button_bar"
-        self.device_list_tag = "device_list"
-        self.device_grid_container_tag = "device_grid_container"
+        # Root window
+        self.root: Optional[tk.Tk] = None
+        self.main_frame: Optional[ttk.Frame] = None
+        self.button_frame: Optional[ttk.Frame] = None
+        self.device_frame: Optional[ttk.Frame] = None
+        self.canvas: Optional[tk.Canvas] = None
+        self.scrollbar: Optional[ttk.Scrollbar] = None
+        self.device_container: Optional[ttk.Frame] = None
         
         # Device widgets
         self.device_widgets: dict[str, DeviceWidget] = {}
         
         # Grid layout settings
-        self.grid_columns = 3  # Number of columns in grid (will be calculated dynamically)
+        self.grid_columns = 3  # Number of columns in grid
         self.device_width = 380  # Width of each device widget
         self.device_height = 200  # Height of each device widget
         self.device_spacing = 10  # Spacing between devices
         self.window_padding = 20  # Window padding
         
-        # Resize handling
-        self._last_viewport_width = 0  # Track last viewport width to detect changes
+        # Empty label
+        self.empty_label: Optional[ttk.Label] = None
     
     def create_layout(self, width: int = 1200, height: int = 800):
         """
@@ -57,73 +61,104 @@ class UILayout:
             width: Window width
             height: Window height
         """
-        # Create viewport
-        dpg.create_viewport(title="Moonraker Simulator", width=width, height=height)
+        # Create root window
+        self.root = tk.Tk()
+        self.root.title("Moonraker Simulator")
+        self.root.geometry(f"{width}x{height}")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
-        # Create main window
-        with dpg.window(label="Moonraker Simulator", tag=self.main_window_tag):
-            # Top button bar (height 50)
-            self._create_button_bar()
-            
-            # Device list area (remaining space)
-            self._create_device_list()
+        # Create main frame
+        self.main_frame = ttk.Frame(self.root, padding="10")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
         
-        dpg.setup_dearpygui()
-        dpg.show_viewport()
-        dpg.set_primary_window(self.main_window_tag, True)
+        # Create button bar
+        self._create_button_bar()
         
-        # Set up viewport resize callback to adjust grid layout
-        dpg.set_viewport_resize_callback(self._on_viewport_resize)
+        # Create device list area
+        self._create_device_list()
         
-        # Calculate initial grid columns and store initial width
-        self.grid_columns = self._calculate_grid_columns()
-        try:
-            self._last_viewport_width = dpg.get_viewport_width()
-        except:
-            self._last_viewport_width = width
+        # Bind resize event
+        self.root.bind("<Configure>", self._on_window_resize)
+        
+        # Calculate initial grid columns
+        self._calculate_grid_columns()
     
     def _create_button_bar(self):
-        """Create the top button bar (height 50)."""
-        # Use child_window to control height precisely
-        with dpg.child_window(
-            tag=self.button_bar_tag,
-            height=50,
-            border=True,
-            autosize_x=True
-        ):
-            with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="添加设备",
-                    callback=self._on_add_device_clicked,
-                    tag="add_device_btn",
-                    height=40
-                )
-                dpg.add_button(
-                    label="批量添加设备",
-                    callback=self._on_batch_add_clicked,
-                    tag="batch_add_btn",
-                    height=40
-                )
+        """Create the top button bar."""
+        self.button_frame = ttk.Frame(self.main_frame, height=50)
+        self.button_frame.pack(fill=tk.X, pady=(0, 10))
+        self.button_frame.pack_propagate(False)
+        
+        # Add device button
+        add_btn = ttk.Button(
+            self.button_frame,
+            text="添加设备",
+            command=self._on_add_device_clicked
+        )
+        add_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Batch add device button
+        batch_btn = ttk.Button(
+            self.button_frame,
+            text="批量添加设备",
+            command=self._on_batch_add_clicked
+        )
+        batch_btn.pack(side=tk.LEFT, padx=5)
     
     def _create_device_list(self):
         """Create the device list area with grid layout."""
-        # Create scrollable area for device list
-        with dpg.child_window(
-            tag=self.device_list_tag,
-            height=-1,  # Fill remaining space
-            border=False,
-            autosize_x=True
-        ):
-            # Create grid container for devices
-            with dpg.group(tag="device_grid_container"):
-                dpg.add_text("暂无设备，点击上方按钮添加设备", color=[150, 150, 150], tag="empty_list_text")
+        # Create scrollable frame
+        scroll_frame = ttk.Frame(self.main_frame)
+        scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create canvas and scrollbar
+        self.canvas = tk.Canvas(scroll_frame, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(scroll_frame, orient="vertical", command=self.canvas.yview)
+        self.device_container = ttk.Frame(self.canvas)
+        
+        # Configure scrolling
+        self.device_container.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        # Create window in canvas
+        canvas_window = self.canvas.create_window((0, 0), window=self.device_container, anchor="nw")
+        
+        # Update scroll region when container size changes
+        def configure_scroll_region(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            # Keep canvas window width equal to canvas width
+            canvas_width = event.width
+            self.canvas.itemconfig(canvas_window, width=canvas_width)
+        
+        self.device_container.bind("<Configure>", configure_scroll_region)
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(canvas_window, width=e.width))
+        
+        # Bind mousewheel
+        def on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        self.canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        # Pack canvas and scrollbar
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # Empty label
+        self.empty_label = ttk.Label(
+            self.device_container,
+            text="暂无设备，点击上方按钮添加设备",
+            foreground="gray"
+        )
+        self.empty_label.pack(pady=20)
     
     def _on_add_device_clicked(self):
         """Handle add device button click."""
         if self.on_add_device:
             self.on_add_device()
         else:
-            # Default behavior
             self.add_device()
     
     def _on_batch_add_clicked(self):
@@ -137,39 +172,16 @@ class UILayout:
     
     def _show_batch_add_dialog(self):
         """Show dialog for batch add count."""
-        # Simple input using DearPyGui modal
-        with dpg.window(
-            label="批量添加设备",
-            modal=True,
-            tag="batch_add_dialog",
-            width=300,
-            height=150
-        ):
-            dpg.add_text("请输入要添加的设备数量:")
-            count_input = dpg.add_input_int(
-                tag="batch_count_input",
-                default_value=3,
-                min_value=1,
-                max_value=10,
-                width=200
-            )
-            
-            with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="确定",
-                    callback=lambda: self._confirm_batch_add()
-                )
-                dpg.add_button(
-                    label="取消",
-                    callback=lambda: dpg.delete_item("batch_add_dialog")
-                )
-    
-    def _confirm_batch_add(self):
-        """Confirm batch add."""
-        if dpg.does_item_exist("batch_count_input"):
-            count = dpg.get_value("batch_count_input")
-            dpg.delete_item("batch_add_dialog")
-            
+        count = simpledialog.askinteger(
+            "批量添加设备",
+            "请输入要添加的设备数量:",
+            parent=self.root,
+            minvalue=1,
+            maxvalue=10,
+            initialvalue=3
+        )
+        
+        if count is not None:
             if self.on_batch_add:
                 self.on_batch_add(count)
             else:
@@ -191,9 +203,9 @@ class UILayout:
             simulator = self.device_manager.get_device(device_id)
             
             if simulator:
-                # Hide empty list text
-                if dpg.does_item_exist("empty_list_text"):
-                    dpg.hide_item("empty_list_text")
+                # Hide empty label
+                if self.empty_label:
+                    self.empty_label.pack_forget()
                 
                 # Ensure grid columns are up to date
                 current_columns = self._calculate_grid_columns()
@@ -203,34 +215,24 @@ class UILayout:
                     if len(self.device_widgets) > 0:
                         self._reorganize_grid()
                 
-                # Calculate which row this device should go in
-                device_count = len(self.device_widgets)
-                row_index = device_count // self.grid_columns
-                row_tag = f"grid_row_{row_index}"
-                
-                # Create row group if it doesn't exist
-                if not dpg.does_item_exist(row_tag):
-                    with dpg.group(
-                        parent=self.device_grid_container_tag,
-                        horizontal=True,
-                        tag=row_tag
-                    ):
-                        pass  # Group created, will add widget below
-                
-                # Create device widget with grid layout
+                # Create device widget
                 widget = DeviceWidget(
                     device_id=device_id,
                     device_name=device_name,
                     simulator=simulator,
-                    on_remove=self.remove_device
+                    on_remove=self.remove_device,
+                    parent=self.device_container
                 )
+                
                 widget.create_widget(
-                    parent=row_tag,
                     width=self.device_width,
                     height=self.device_height
                 )
                 
                 self.device_widgets[device_id] = widget
+                
+                # Update grid layout
+                self._update_grid_layout()
                 
                 logger.info(f"Added device widget for {device_id}")
                 return device_id
@@ -266,13 +268,13 @@ class UILayout:
             # Remove from device manager
             self.device_manager.remove_device(device_id)
             
-            # Show empty list text if no devices
+            # Show empty label if no devices
             if len(self.device_widgets) == 0:
-                if dpg.does_item_exist("empty_list_text"):
-                    dpg.show_item("empty_list_text")
+                if self.empty_label:
+                    self.empty_label.pack(pady=20)
             else:
                 # Reorganize remaining devices in grid
-                self._reorganize_grid()
+                self._update_grid_layout()
             
             logger.info(f"Removed device {device_id}")
         except Exception as e:
@@ -283,96 +285,85 @@ class UILayout:
         for widget in self.device_widgets.values():
             widget.update()
         
-        # Also check for viewport size changes as a backup mechanism
-        self._check_viewport_resize()
-    
-    def _check_viewport_resize(self):
-        """Check if viewport size changed and update grid if needed."""
-        try:
-            current_width = dpg.get_viewport_width()
-            if current_width != self._last_viewport_width:
-                # Trigger resize handler
-                self._on_viewport_resize()
-        except Exception as e:
-            # Silently ignore errors in periodic check
-            pass
+        # Check for window size changes
+        self._calculate_grid_columns()
     
     def _calculate_grid_columns(self):
-        """Calculate number of columns based on viewport width."""
+        """Calculate number of columns based on window width."""
         try:
-            viewport_width = dpg.get_viewport_width()
-            if viewport_width > 0:
-                # Calculate available width (viewport width minus padding)
-                available_width = viewport_width - (self.window_padding * 2)
-                # Calculate how many devices can fit
-                # Each device needs: device_width + spacing
-                columns = max(1, int((available_width + self.device_spacing) / (self.device_width + self.device_spacing)))
-                return columns
+            if self.root and self.canvas:
+                canvas_width = self.canvas.winfo_width()
+                if canvas_width > 1:  # Widget must be visible
+                    # Calculate available width (canvas width minus padding)
+                    available_width = canvas_width - (self.window_padding * 2)
+                    # Calculate how many devices can fit
+                    # Each device needs: device_width + spacing
+                    columns = max(1, int((available_width + self.device_spacing) / (self.device_width + self.device_spacing)))
+                    if columns != self.grid_columns:
+                        old_columns = self.grid_columns
+                        self.grid_columns = columns
+                        # Reorganize if column count changed
+                        if len(self.device_widgets) > 0:
+                            self._update_grid_layout()
+                    return columns
         except Exception as e:
             logger.error(f"Error calculating grid columns: {e}")
-        return 3  # Default fallback
+        return self.grid_columns
     
-    def _on_viewport_resize(self, sender=None, app_data=None):
-        """Handle viewport resize event."""
-        try:
-            # Get current viewport width
-            current_width = dpg.get_viewport_width()
+    def _on_window_resize(self, event=None):
+        """Handle window resize event."""
+        if event and event.widget == self.root:
+            # Update grid layout after a short delay to allow widget to resize
+            self.root.after(100, self._calculate_grid_columns)
+    
+    def _update_grid_layout(self):
+        """Update grid layout for all devices."""
+        if not self.device_container:
+            return
+        
+        # Get all widget frames
+        widget_list = list(self.device_widgets.values())
+        if len(widget_list) == 0:
+            return
+        
+        # Clear current grid
+        for widget in widget_list:
+            if widget.frame:
+                widget.frame.grid_forget()
+        
+        # Organize into grid rows
+        for idx, widget in enumerate(widget_list):
+            row = idx // self.grid_columns
+            col = idx % self.grid_columns
             
-            # Only process if width actually changed (avoid unnecessary updates)
-            if current_width != self._last_viewport_width:
-                self._last_viewport_width = current_width
-                
-                # Calculate new column count
-                new_columns = self._calculate_grid_columns()
-                
-                # Only reorganize if column count changed
-                if new_columns != self.grid_columns:
-                    logger.debug(f"Grid columns changed: {self.grid_columns} -> {new_columns} (viewport width: {current_width})")
-                    self.grid_columns = new_columns
-                    # Reorganize grid if there are devices
-                    if len(self.device_widgets) > 0:
-                        self._reorganize_grid()
-        except Exception as e:
-            logger.error(f"Error handling viewport resize: {e}")
+            if widget.frame:
+                widget.frame.grid(
+                    row=row,
+                    column=col,
+                    padx=5,
+                    pady=5,
+                    sticky="nsew"
+                )
+        
+        # Update scroll region
+        if self.canvas:
+            self.canvas.update_idletasks()
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
     def _reorganize_grid(self):
         """Reorganize grid layout after device removal or window resize."""
-        device_count = len(self.device_widgets)
-        if device_count == 0:
-            return
-        
-        # Calculate number of rows needed
-        rows = (device_count + self.grid_columns - 1) // self.grid_columns
-        
-        # Get all existing row groups
-        if dpg.does_item_exist(self.device_grid_container_tag):
-            children = dpg.get_item_children(self.device_grid_container_tag, slot=1)
-            existing_rows = [child for child in children 
-                           if isinstance(child, str) and child.startswith("grid_row_")]
-            
-            # Delete all existing row groups
-            for row_tag in existing_rows:
-                if dpg.does_item_exist(row_tag):
-                    dpg.delete_item(row_tag)
-        
-        # Reorganize devices into grid rows
-        device_list = list(self.device_widgets.values())
-        for row in range(rows):
-            start_idx = row * self.grid_columns
-            end_idx = min(start_idx + self.grid_columns, device_count)
-            row_devices = device_list[start_idx:end_idx]
-            
-            # Create a horizontal group for this row
-            row_tag = f"grid_row_{row}"
-            with dpg.group(
-                parent=self.device_grid_container_tag,
-                horizontal=True,
-                tag=row_tag
-            ):
-                for widget in row_devices:
-                    # Move widget to this row
-                    if dpg.does_item_exist(widget.container_tag):
-                        dpg.move_item(widget.container_tag, parent=row_tag)
+        self._update_grid_layout()
+    
+    def run(self):
+        """Run the GUI main loop."""
+        if self.root:
+            self.root.mainloop()
+    
+    def _on_closing(self):
+        """Handle window closing event."""
+        self.cleanup()
+        if self.root:
+            self.root.destroy()
     
     def cleanup(self):
         """Cleanup UI resources."""
@@ -383,4 +374,3 @@ class UILayout:
         
         # Cleanup device manager
         self.device_manager.cleanup_all()
-

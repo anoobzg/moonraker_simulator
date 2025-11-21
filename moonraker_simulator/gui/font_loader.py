@@ -1,92 +1,118 @@
 # -*- coding: utf-8 -*-
 """
-Font loading utilities for Chinese character support.
+Font loading utilities for Chinese character support in tkinter.
 """
 
 import logging
 import os
 import platform
 from typing import Optional
-
-import dearpygui.dearpygui as dpg
+import tkinter as tk
+from tkinter import font
 
 logger = logging.getLogger(__name__)
 
 
-def load_chinese_font() -> Optional[int]:
+def load_chinese_font(root: Optional[tk.Tk] = None, size: int = 10) -> Optional[font.Font]:
     """
-    Load a Chinese font if available with proper character range hints.
+    Load a Chinese font if available for tkinter.
+    
+    Args:
+        root: Tk root window (optional)
+        size: Font size (default: 10)
     
     Returns:
-        Font ID if successful, None otherwise
+        Font object if successful, None otherwise
     """
     system = platform.system()
-    font_path = None
+    font_family = None
     
     # Try to find a Chinese font based on OS
-    # Prefer TTF files over TTC for better compatibility
     if system == "Windows":
-        # Windows font paths - prioritize TTF files
-        font_paths = [
-            # SimHei (黑体) - TTF format, better compatibility
-            r"C:\Windows\Fonts\simhei.ttf",
-            # SimSun (宋体) - TTC but widely supported
-            r"C:\Windows\Fonts\simsun.ttc",
-            # Microsoft YaHei (微软雅黑) - TTC format
-            r"C:\Windows\Fonts\msyh.ttc",
-            r"C:\Windows\Fonts\msyhbd.ttc",
-            # Microsoft YaHei UI - TTF format
-            r"C:\Windows\Fonts\msyh.ttf",
+        # Windows font families - try common Chinese fonts
+        font_families = [
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "SimHei",
+            "SimSun",
+            "KaiTi",
         ]
     elif system == "Darwin":  # macOS
-        font_paths = [
-            # PingFang SC (苹果系统默认中文字体)
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc",
+        font_families = [
+            "PingFang SC",
+            "STHeiti",
+            "STSong",
+            "Arial Unicode MS",
         ]
     else:  # Linux
-        font_paths = [
-            # Common Linux Chinese fonts
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        font_families = [
+            "WenQuanYi Micro Hei",
+            "WenQuanYi Zen Hei",
+            "Noto Sans CJK SC",
+            "DejaVu Sans",
         ]
     
-    # Try to find an available font
-    for path in font_paths:
-        if os.path.exists(path):
-            font_path = path
-            logger.info(f"Found Chinese font: {font_path}")
+    # Check which fonts are available
+    # font.families() may require a Tk instance depending on Python version
+    try:
+        # Try without root first (some versions support this)
+        available_fonts = set(font.families())
+    except TypeError:
+        # If that fails, create a temporary root window
+        temp_root = tk.Tk()
+        temp_root.withdraw()  # Hide the window
+        try:
+            if root is None:
+                available_fonts = set(font.families(root=temp_root))
+            else:
+                available_fonts = set(font.families(root=root))
+        finally:
+            temp_root.destroy()
+    except Exception:
+        # Fallback: just use the font families list without checking
+        available_fonts = set(font_families)
+    
+    # Try to find an available Chinese font
+    for family in font_families:
+        if family in available_fonts:
+            font_family = family
+            logger.info(f"Found Chinese font: {font_family}")
             break
     
-    if font_path:
+    if font_family:
         try:
-            # Use a slightly larger size for better readability
-            font_size = 18
-            # Load font with Chinese character range hints using context manager
-            # This ensures proper rendering of Chinese characters
-            # The font range hints must be added within the font context
-            with dpg.font(font_path, font_size) as default_font:
-                # Add font range hints for proper Chinese character support
-                # This is the key to fixing Chinese character display issues
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Chinese_Simplified_Common)
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Chinese_Full)
-            
-            logger.info(f"Successfully loaded Chinese font: {font_path} (size={font_size}) with character range hints")
-            return default_font
+            chinese_font = font.Font(family=font_family, size=size)
+            logger.info(f"Successfully loaded Chinese font: {font_family} (size={size})")
+            return chinese_font
         except Exception as e:
-            logger.warning(f"Failed to load font {font_path}: {e}")
+            logger.warning(f"Failed to load font {font_family}: {e}")
             import traceback
             logger.warning(traceback.format_exc())
     else:
-        logger.warning("No Chinese font file found in system")
-        # Log available font paths for debugging
-        if system == "Windows":
-            fonts_dir = r"C:\Windows\Fonts"
-            if os.path.exists(fonts_dir):
-                logger.info(f"Fonts directory exists: {fonts_dir}")
+        logger.warning("No Chinese font found in system")
+        # Log available fonts for debugging (first 20)
+        available_list = list(available_fonts)[:20]
+        logger.debug(f"Available fonts (first 20): {available_list}")
     
-    logger.warning("Chinese characters may display incorrectly")
+    # Return default font if Chinese font not found
+    logger.warning("Using default font - Chinese characters may display incorrectly")
     return None
 
+
+def apply_chinese_font_to_widget(widget: tk.Widget, font_obj: Optional[font.Font] = None, size: int = 10):
+    """
+    Apply Chinese font to a widget.
+    
+    Args:
+        widget: Tkinter widget to apply font to
+        font_obj: Font object (if None, will try to load one)
+        size: Font size (default: 10)
+    """
+    if font_obj is None:
+        font_obj = load_chinese_font(widget.winfo_toplevel(), size=size)
+    
+    if font_obj:
+        try:
+            widget.config(font=font_obj)
+        except Exception as e:
+            logger.warning(f"Failed to apply font to widget: {e}")
